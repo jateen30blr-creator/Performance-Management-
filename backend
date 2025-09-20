@@ -1,0 +1,251 @@
+import psycopg2
+import pandas as pd
+import streamlit as st
+from datetime import date
+
+# *** IMPORTANT: Replace these with your actual PostgreSQL credentials ***
+DB_NAME = "Performance_management"
+DB_USER = "postgres"
+DB_PASS = "Jateen26"
+DB_HOST = "localhost"
+DB_PORT = "5432"
+
+def get_db_connection():
+    """Establishes a connection to the PostgreSQL database."""
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASS,
+            host=DB_HOST,
+            port=DB_PORT
+        )
+        return conn
+    except psycopg2.OperationalError as e:
+        st.error(f"Error connecting to database: {e}")
+        return None
+
+# --- User Management ---
+
+def create_user(username, role, manager_id=None):
+    """Creates a new user with a specified role."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO users (username, user_role, manager_id) VALUES (%s, %s, %s) RETURNING user_id;",
+                    (username, role, manager_id)
+                )
+                user_id = cur.fetchone()[0]
+                conn.commit()
+                st.success(f"User '{username}' created successfully!")
+                return user_id
+        except psycopg2.Error as e:
+            st.error(f"Database error: {e}")
+        finally:
+            conn.close()
+
+def get_user(username):
+    """Retrieves a user's information by username."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, username, user_role, manager_id FROM users WHERE username = %s;", (username,))
+            user_data = cur.fetchone()
+            if user_data:
+                return {"user_id": user_data[0], "username": user_data[1], "role": user_data[2], "manager_id": user_data[3]}
+            return None
+    except psycopg2.Error as e:
+        st.error(f"Database error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+# --- User Management ---
+def get_all_employees():
+    """
+    Retrieves all employees for the manager to assign goals.
+    (Corrected to fetch 'user_role' to prevent KeyError)
+    """
+    conn = get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, username, user_role FROM users;")
+            data = cur.fetchall()
+            df = pd.DataFrame(data, columns=['user_id', 'username', 'user_role'])
+            return df
+    except psycopg2.Error as e:
+        st.error(f"Database error: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn:
+            conn.close()
+# --- Goal Management ---
+
+def set_goal(employee_id, manager_id, description, due_date):
+    """Sets a new goal for an employee."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO goals (employee_id, manager_id, description, due_date) VALUES (%s, %s, %s, %s);",
+                    (employee_id, manager_id, description, due_date)
+                )
+                conn.commit()
+                st.success("Goal set successfully!")
+        except psycopg2.Error as e:
+            st.error(f"Database error: {e}")
+        finally:
+            conn.close()
+
+def get_goals_for_manager(manager_id):
+    """Retrieves all goals for a manager's team."""
+    conn = get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+    query = """
+        SELECT
+            g.goal_id, g.description, g.due_date, g.status, u.username AS employee_name
+        FROM goals g
+        JOIN users u ON g.employee_id = u.user_id
+        WHERE g.manager_id = %s;
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (manager_id,))
+            data = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            return pd.DataFrame(data, columns=columns)
+    except psycopg2.Error as e:
+        st.error(f"Database error: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn:
+            conn.close()
+
+def get_goals_for_employee(employee_id):
+    """Retrieves all goals assigned to an employee."""
+    conn = get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+    query = """
+        SELECT
+            g.goal_id, g.description, g.due_date, g.status
+        FROM goals g
+        WHERE g.employee_id = %s;
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (employee_id,))
+            data = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            return pd.DataFrame(data, columns=columns)
+    except psycopg2.Error as e:
+        st.error(f"Database error: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn:
+            conn.close()
+
+def update_goal_status(goal_id, new_status):
+    """Updates the status of a goal."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE goals SET status = %s WHERE goal_id = %s;", (new_status, goal_id))
+                conn.commit()
+                st.success("Goal status updated!")
+        except psycopg2.Error as e:
+            st.error(f"Database error: {e}")
+        finally:
+            conn.close()
+
+# --- Task and Progress Tracking ---
+
+def log_task(goal_id, log_entry):
+    """Logs a task entry for a specific goal."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO tasks (goal_id, log_entry) VALUES (%s, %s);",
+                    (goal_id, log_entry)
+                )
+                conn.commit()
+                st.success("Task logged successfully!")
+        except psycopg2.Error as e:
+            st.error(f"Database error: {e}")
+        finally:
+            conn.close()
+
+def get_tasks_for_goal(goal_id):
+    """Retrieves all tasks for a specific goal."""
+    conn = get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+    query = "SELECT log_entry, date_logged FROM tasks WHERE goal_id = %s ORDER BY date_logged DESC;"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (goal_id,))
+            data = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            return pd.DataFrame(data, columns=columns)
+    except psycopg2.Error as e:
+        st.error(f"Database error: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn:
+            conn.close()
+            
+# --- Feedback and Reporting ---
+
+def provide_feedback(from_user_id, to_user_id, comment, goal_id=None):
+    """Allows a user to provide feedback to another user."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO feedback (from_user_id, to_user_id, comment, goal_id) VALUES (%s, %s, %s, %s);",
+                    (from_user_id, to_user_id, comment, goal_id)
+                )
+                conn.commit()
+                st.success("Feedback submitted!")
+        except psycopg2.Error as e:
+            st.error(f"Database error: {e}")
+        finally:
+            conn.close()
+
+def get_feedback_for_user(user_id):
+    """Retrieves all feedback for a user."""
+    conn = get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+    query = """
+        SELECT
+            f.comment, f.date_provided, u.username AS from_user
+        FROM feedback f
+        JOIN users u ON f.from_user_id = u.user_id
+        WHERE f.to_user_id = %s
+        ORDER BY f.date_provided DESC;
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (user_id,))
+            data = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            return pd.DataFrame(data, columns=columns)
+    except psycopg2.Error as e:
+        st.error(f"Database error: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn:
+            conn.close()
