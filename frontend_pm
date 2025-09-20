@@ -1,0 +1,160 @@
+import streamlit as st
+import pandas as pd
+from datetime import date
+from Backend_pms import (
+    get_user,
+    create_user,
+    set_goal,
+    get_goals_for_manager,
+    get_goals_for_employee,
+    update_goal_status,
+    log_task,
+    get_tasks_for_goal,
+    get_all_employees,
+    provide_feedback,
+    get_feedback_for_user
+)
+
+# --- Session State Management for User Login ---
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+def login_and_create_user():
+    """Handles user login and profile creation."""
+    st.header("Welcome to the PMS!")
+    st.info("Log in with your username to get started.")
+
+    username = st.text_input("Username")
+
+    if st.button("Login"):
+        user = get_user(username)
+        if user:
+            st.session_state.user = user
+            st.success(f"Logged in as {user['username']} ({user['role']})!")
+            st.rerun()
+        else:
+            st.error("User not found. Please create a new profile.")
+            
+    with st.expander("Create a New Profile"):
+        new_username = st.text_input("New Username")
+        new_role = st.selectbox("Role", ["employee", "manager"])
+        
+        manager_id = None
+        if new_role == 'employee':
+            employees_df = get_all_employees()
+            if not employees_df.empty:
+                managers_df = employees_df[employees_df['user_role'] == 'manager']
+                if not managers_df.empty:
+                    manager_username = st.selectbox("Select your Manager", managers_df['username'])
+                    manager_id = managers_df[managers_df['username'] == manager_username]['user_id'].iloc[0]
+
+        if st.button("Create Profile"):
+            user_id = create_user(new_username, new_role, manager_id)
+            if user_id:
+                st.session_state.user = {"user_id": user_id, "username": new_username, "role": new_role, "manager_id": manager_id}
+                st.rerun()
+
+def manager_view(user):
+    """Renders the manager's dashboard and functionality."""
+    st.sidebar.title(f"Manager Dashboard for {user['username']}")
+
+    # --- Goal Setting ---
+    st.header("🎯 Set a New Goal for Your Team")
+    with st.form("set_goal_form", clear_on_submit=True):
+        employees_df = get_all_employees()
+        employee_username = st.selectbox("Select Employee", employees_df['username'])
+        employee_id = employees_df[employees_df['username'] == employee_username]['user_id'].iloc[0]
+        
+        goal_description = st.text_area("Goal Description")
+        due_date = st.date_input("Due Date", date.today())
+        
+        if st.form_submit_button("Set Goal"):
+            set_goal(employee_id, user['user_id'], goal_description, due_date)
+            st.rerun()
+
+    # --- Team Performance Report ---
+    st.header("📊 Team Performance Report")
+    goals_df = get_goals_for_manager(user['user_id'])
+    if not goals_df.empty:
+        st.subheader("Goals by Status")
+        status_counts = goals_df['status'].value_counts()
+        st.bar_chart(status_counts)
+        
+        st.subheader("All Team Goals")
+        st.dataframe(goals_df, use_container_width=True)
+        
+        # Actionable Insights (e.g., incomplete goals)
+        st.subheader("Actionable Insights")
+        incomplete_goals = goals_df[goals_df['status'] != 'Completed']
+        if not incomplete_goals.empty:
+            st.info("Review these goals and follow up with your employees:")
+            st.dataframe(incomplete_goals, use_container_width=True)
+            
+            goal_to_update = st.selectbox("Select a goal to update status:", incomplete_goals['description'])
+            new_status = st.selectbox("New Status", ["In Progress", "Completed", "Canceled"])
+            if st.button("Update Status"):
+                goal_id = incomplete_goals[incomplete_goals['description'] == goal_to_update]['goal_id'].iloc[0]
+                update_goal_status(goal_id, new_status)
+                st.rerun()
+                
+    else:
+        st.info("No goals have been set for your team yet.")
+        
+    # --- Feedback ---
+    st.header("💬 Provide Feedback")
+    with st.form("provide_feedback_form", clear_on_submit=True):
+        feedback_target_username = st.selectbox("To Employee", employees_df['username'])
+        feedback_target_id = employees_df[employees_df['username'] == feedback_target_username]['user_id'].iloc[0]
+        feedback_comment = st.text_area("Your Feedback")
+        if st.form_submit_button("Submit Feedback"):
+            provide_feedback(user['user_id'], feedback_target_id, feedback_comment)
+
+def employee_view(user):
+    """Renders the employee's dashboard and functionality."""
+    st.sidebar.title(f"Employee Portal for {user['username']}")
+
+    # --- My Goals ---
+    st.header("🎯 My Assigned Goals")
+    goals_df = get_goals_for_employee(user['user_id'])
+    if not goals_df.empty:
+        st.dataframe(goals_df, use_container_width=True)
+        
+        goal_to_log = st.selectbox("Select a goal to log progress:", goals_df['description'])
+        goal_id = goals_df[goals_df['description'] == goal_to_log]['goal_id'].iloc[0]
+        
+        with st.form("log_task_form", clear_on_submit=True):
+            log_entry = st.text_area("Log your progress here")
+            if st.form_submit_button("Log Progress"):
+                log_task(goal_id, log_entry)
+                st.rerun()
+                
+        # --- View Progress ---
+        st.subheader(f"Progress for '{goal_to_log}'")
+        tasks_df = get_tasks_for_goal(goal_id)
+        if not tasks_df.empty:
+            st.dataframe(tasks_df, use_container_width=True)
+        else:
+            st.info("No progress has been logged for this goal yet.")
+    else:
+        st.info("No goals have been assigned to you yet.")
+        
+    # --- Feedback ---
+    st.header("💬 Feedback from Manager")
+    feedback_df = get_feedback_for_user(user['user_id'])
+    if not feedback_df.empty:
+        st.dataframe(feedback_df, use_container_width=True)
+    else:
+        st.info("No feedback has been provided for you yet.")
+
+def main():
+    if st.session_state.user:
+        user = st.session_state.user
+        if user['role'] == 'manager':
+            manager_view(user)
+        else:
+            employee_view(user)
+    else:
+        login_and_create_user()
+
+if __name__ == "__main__":
+    main()
